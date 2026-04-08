@@ -1,6 +1,7 @@
 package custom
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,11 +23,11 @@ import (
 
 // Manager 订阅管理器
 type Manager struct {
-	storage    *storage.Storage
-	validator  *validator.Validator
-	singbox    *SingBoxProcess
-	stopCh     chan struct{}
-	refreshMu  sync.Mutex // 防止并发刷新
+	storage   *storage.Storage
+	validator *validator.Validator
+	singbox   *SingBoxProcess
+	stopCh    chan struct{}
+	refreshMu sync.Mutex // 防止并发刷新
 }
 
 // NewManager 创建订阅管理器
@@ -386,6 +388,10 @@ func (m *Manager) fetchSubscriptionData(sub *storage.Subscription) ([]byte, erro
 
 // fetchWithRetry 尝试拉取 URL（直连 → 代理，多种方式）
 func (m *Manager) fetchWithRetry(urlStr string) ([]byte, error) {
+	if err := validateSubscriptionURL(urlStr); err != nil {
+		return nil, err
+	}
+
 	// 先尝试直连
 	data, err := m.fetchURL(urlStr, nil)
 	if err == nil {
@@ -500,10 +506,10 @@ func (m *Manager) GetStatus() map[string]interface{} {
 	subs, _ := m.storage.GetSubscriptions()
 
 	return map[string]interface{}{
-		"singbox_running":   m.singbox.IsRunning(),
-		"singbox_nodes":     m.singbox.GetNodeCount(),
-		"custom_count":      customCount,
-		"disabled_count":    len(disabled),
+		"singbox_running":    m.singbox.IsRunning(),
+		"singbox_nodes":      m.singbox.GetNodeCount(),
+		"custom_count":       customCount,
+		"disabled_count":     len(disabled),
 		"subscription_count": len(subs),
 	}
 }
@@ -536,6 +542,68 @@ func (m *Manager) ValidateSubscription(url, filePath string) (int, error) {
 	}
 
 	return len(nodes), nil
+}
+
+func validateSubscriptionURL(urlStr string) error {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("订阅 URL 非法: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("仅支持 http/https 订阅 URL")
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("订阅 URL 缺少主机名")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("禁止使用本地回环地址")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isDisallowedSubscriptionIP(ip) {
+			return fmt.Errorf("禁止访问内网或保留地址: %s", host)
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return fmt.Errorf("解析订阅主机失败: %w", err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("订阅主机解析结果为空")
+	}
+	for _, addr := range addrs {
+		if isDisallowedSubscriptionIP(addr.IP) {
+			return fmt.Errorf("订阅主机解析到内网或保留地址: %s", addr.IP.String())
+		}
+	}
+	return nil
+}
+
+func isDisallowedSubscriptionIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if isCarrierGradeNAT(ip) {
+		return true
+	}
+	return false
+}
+
+func isCarrierGradeNAT(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	return ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127
 }
 
 // isGeoBlocked 检查代理出口位置是否被地理过滤

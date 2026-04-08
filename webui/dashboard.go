@@ -225,7 +225,6 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
                 <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
               </svg>
             </a>
-            <button class="tab guest-only" onclick="openContributeModal()" style="color:var(--yellow)" data-i18n="contribute.nav">贡献订阅</button>
             <a href="/login" class="tab" id="login-link" style="display: none;" data-i18n="nav.login">登录</a>
             <a href="/logout" class="tab admin-only" data-i18n="nav.logout">退出</a>
             <button class="tab admin-only" onclick="openSettings()" title="" data-i18n-title="contribute.settings" style="padding:4px 8px">
@@ -507,52 +506,6 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeSubModal()" data-i18n="sub.cancel">取消</button>
       <button class="btn" onclick="addSubscription()" data-i18n="sub.submit">添加</button>
-    </div>
-  </div>
-</div>
-
-<!-- 访客贡献订阅弹窗 -->
-<div class="modal-overlay" id="contribute-modal" onclick="if(event.target===this) closeContributeModal()" style="display:none">
-  <div class="modal" style="max-width:460px">
-    <div class="modal-title" data-i18n="contribute.title">贡献订阅</div>
-    <div style="color:var(--fg-dim);font-size:11px;margin-bottom:16px;line-height:1.6">
-      <span data-i18n="contribute.desc">分享你的代理订阅，帮助丰富代理池。</span><br>
-      <span style="color:var(--gray-5);font-size:10px" data-i18n="contribute.privacy">你的订阅仅用于此代理池，不会被用于其他渠道。连续探测无可用节点将自动移除。</span>
-    </div>
-    <div class="form-section">
-      <div class="form-grid">
-        <div class="form-group" style="grid-column:1/-1">
-          <label data-i18n="sub.name">名称</label>
-          <input type="text" id="contribute-name" placeholder="">
-        </div>
-        <div class="form-group" style="grid-column:1/-1">
-          <label data-i18n="sub.import_mode">导入方式</label>
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <button id="ctab-url" class="ctrl-btn-primary" onclick="switchContributeTab('url')" style="flex:1" data-i18n="sub.tab_url">订阅 URL</button>
-            <button id="ctab-file" class="ctrl-btn-secondary" onclick="switchContributeTab('file')" style="flex:1" data-i18n="sub.tab_file">上传文件</button>
-          </div>
-        </div>
-        <div class="form-group" id="contribute-url-group" style="grid-column:1/-1">
-          <label data-i18n="sub.url_label">订阅 URL</label>
-          <input type="text" id="contribute-url" placeholder="https://example.com/sub?token=xxx">
-          <div class="form-help" data-i18n="sub.url_help">自动识别格式</div>
-        </div>
-        <div class="form-group" id="contribute-file-group" style="grid-column:1/-1;display:none">
-          <label data-i18n="sub.file_label">配置文件</label>
-          <div style="border:1px dashed var(--border);padding:16px;text-align:center;cursor:pointer;transition:all 0.2s"
-               onclick="document.getElementById('contribute-file-input').click()"
-               ondragover="event.preventDefault();this.style.borderColor='var(--fg)'"
-               ondragleave="this.style.borderColor='var(--border)'"
-               ondrop="event.preventDefault();this.style.borderColor='var(--border)';handleContributeFileDrop(event)">
-            <div id="contribute-file-label" style="color:var(--fg-dim);font-size:11px" data-i18n="sub.file_drop">点击选择或拖拽文件到此处</div>
-          </div>
-          <input type="file" id="contribute-file-input" accept=".yaml,.yml,.txt,.conf,.json" style="display:none" onchange="handleContributeFileSelect(this)">
-        </div>
-      </div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeContributeModal()" data-i18n="sub.cancel">取消</button>
-      <button class="btn" id="contribute-submit-btn" onclick="submitContribution()" data-i18n="contribute.submit">提交</button>
     </div>
   </div>
 </div>
@@ -941,6 +894,48 @@ async function checkAuth() {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeJSString(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/</g, '\\x3c')
+    .replace(/>/g, '\\x3e');
+}
+
+function loginRequiredText() {
+  return currentLang === 'zh' ? '请登录后查看' : 'Login required';
+}
+
+function applyGuestView() {
+  const proxyWrap = document.getElementById('proxy-table-wrap');
+  if (proxyWrap) {
+    proxyWrap.innerHTML = '<div class="empty">' + loginRequiredText() + '</div>';
+  }
+  const logsBox = document.getElementById('logs-box');
+  if (logsBox) {
+    logsBox.innerHTML = '<div class="empty">' + loginRequiredText() + '</div>';
+  }
+  const subList = document.getElementById('sub-list');
+  if (subList) {
+    subList.innerHTML = '<div style="color:var(--gray-5);text-align:center;padding:8px">' + loginRequiredText() + '</div>';
+  }
+  const subStatus = document.getElementById('sub-status');
+  if (subStatus) {
+    subStatus.textContent = '';
+  }
+}
+
 // 根据角色更新 UI
 function updateUIByRole() {
   // 显示/隐藏管理员专属元素
@@ -1048,6 +1043,11 @@ async function loadQualityDistribution() {
 
 let subNameMap = {};
 async function loadProxies() {
+  if (!isAdmin) {
+    allProxies = [];
+    applyGuestView();
+    return;
+  }
   // 先加载订阅名称映射
   const subs = await api('/api/subscriptions');
   if (subs) {
@@ -1078,7 +1078,7 @@ function updateCountryOptions() {
   select.innerHTML = '<option value="" id="country-filter-label">' + t('proxy.filter_country') + '</option>';
   Array.from(countries).sort().forEach(code => {
     const flag = getCountryFlag(code);
-    select.innerHTML += '<option value="' + code + '">' + flag + ' ' + code + '</option>';
+    select.innerHTML += '<option value="' + escapeHtml(code) + '">' + flag + ' ' + escapeHtml(code) + '</option>';
   });
   if (currentValue && countries.has(currentValue)) {
     select.value = currentValue;
@@ -1125,26 +1125,29 @@ function renderProxies(proxies) {
       const flag = p.exit_location ? getCountryFlag(p.exit_location.split(' ')[0]) : '';
       const grade = (p.quality_grade || 'C').toLowerCase();
       const latencyClass = 'grade-' + grade;
+      const address = p.address || '';
+      const safeAddress = escapeHtml(address || '—');
+      const addressArg = escapeJSString(address);
       
       const rowStyle = p.source === 'custom' ? ' style="border-left:2px solid var(--yellow)"' : '';
       html += '<tr' + rowStyle + '>';
-      html += '<td class="cell-grade grade-' + grade + '">' + (p.quality_grade || 'C') + '</td>';
-      html += '<td><span class="badge badge-' + p.protocol + '">' + p.protocol.toUpperCase() + '</span>';
+      html += '<td class="cell-grade grade-' + grade + '">' + escapeHtml(p.quality_grade || 'C') + '</td>';
+      html += '<td><span class="badge badge-' + escapeHtml(p.protocol) + '">' + escapeHtml((p.protocol || '').toUpperCase()) + '</span>';
       if (p.source === 'custom') {
-        const subName = subNameMap[p.subscription_id] || t('sub.add_title');
+        const subName = escapeHtml(subNameMap[p.subscription_id] || t('sub.add_title'));
         html += ' <span style="display:inline-block;background:var(--yellow);color:#000;font-size:8px;font-weight:700;padding:1px 4px;margin-left:4px;letter-spacing:0.05em">' + subName + '</span>';
       }
       html += '</td>';
-      html += '<td class="cell-mono cell-clickable" onclick="copyToClipboard(\'' + p.address + '\')" title="Copy">' + p.address + '</td>';
-      html += '<td class="cell-mono">' + (p.exit_ip || '—') + '</td>';
-      html += '<td>' + flag + ' ' + (p.exit_location || '—') + '</td>';
-      html += '<td class="cell-mono ' + latencyClass + '">' + (p.latency > 0 ? p.latency + 'ms' : '—') + '</td>';
+      html += '<td class="cell-mono cell-clickable" onclick="copyToClipboard(\'' + addressArg + '\')" title="Copy">' + safeAddress + '</td>';
+      html += '<td class="cell-mono">' + escapeHtml(p.exit_ip || '—') + '</td>';
+      html += '<td>' + flag + ' ' + escapeHtml(p.exit_location || '—') + '</td>';
+      html += '<td class="cell-mono ' + latencyClass + '">' + escapeHtml(p.latency > 0 ? p.latency + 'ms' : '—') + '</td>';
       html += '<td class="cell-mono">' + (p.use_count || 0) + ' / ' + (p.success_count || 0) + '</td>';
       
       if (isAdmin) {
         html += '<td>';
-        html += '<button class="btn-action" onclick="refreshProxy(\'' + p.address + '\')" data-i18n="proxy.btn_refresh">' + t('proxy.btn_refresh') + '</button>';
-        html += '<button class="btn-danger" onclick="deleteProxy(\'' + p.address + '\')" data-i18n="proxy.btn_delete">' + t('proxy.btn_delete') + '</button>';
+        html += '<button class="btn-action" onclick="refreshProxy(\'' + addressArg + '\')" data-i18n="proxy.btn_refresh">' + t('proxy.btn_refresh') + '</button>';
+        html += '<button class="btn-danger" onclick="deleteProxy(\'' + addressArg + '\')" data-i18n="proxy.btn_delete">' + t('proxy.btn_delete') + '</button>';
         html += '</td>';
       }
       
@@ -1182,6 +1185,10 @@ async function deleteProxy(addr) {
 }
 
 async function loadLogs() {
+  if (!isAdmin) {
+    applyGuestView();
+    return;
+  }
   const data = await api('/api/logs');
   if (!data) return;
   
@@ -1196,7 +1203,7 @@ async function loadLogs() {
     let cls = '';
     if (line.includes('error') || line.includes('failed') || line.includes('❌') || line.includes('失败')) cls = 'error';
     if (line.includes('success') || line.includes('✅') || line.includes('completed') || line.includes('成功')) cls = 'success';
-    html += '<div class="log-line ' + cls + '">' + line + '</div>';
+    html += '<div class="log-line ' + cls + '">' + escapeHtml(line) + '</div>';
   });
   box.innerHTML = html;
   box.scrollTop = box.scrollHeight;
@@ -1299,6 +1306,10 @@ async function loadAll() {
   await checkAuth(); // 先检查权限
   loadPoolStatus();
   loadQualityDistribution();
+  if (!isAdmin) {
+    applyGuestView();
+    return;
+  }
   loadProxies();
   loadLogs();
 }
@@ -1306,6 +1317,10 @@ async function loadAll() {
 // ========== 订阅管理 ==========
 
 async function loadSubscriptions() {
+  if (!isAdmin) {
+    applyGuestView();
+    return;
+  }
   const subs = await api('/api/subscriptions');
   const el = document.getElementById('sub-list');
   if (!el || !subs) return;
@@ -1326,8 +1341,8 @@ async function loadSubscriptions() {
     return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">' +
       '<div style="flex:1;min-width:0">' +
         '<span style="color:' + statusColor + '">' + statusIcon + '</span> ' +
-        '<span style="font-weight:600">' + (s.name||t('sub.add_title')) + '</span>' + badge +
-        '<span style="color:var(--gray-5);margin-left:8px">' + statsText + '</span>' +
+        '<span style="font-weight:600">' + escapeHtml(s.name||t('sub.add_title')) + '</span>' + badge +
+        '<span style="color:var(--gray-5);margin-left:8px">' + escapeHtml(statsText) + '</span>' +
       '</div>' +
       '<div style="display:flex;gap:4px;flex-shrink:0">' +
         '<button onclick="refreshSub(' + s.id + ')" style="background:none;border:1px solid var(--border);color:var(--fg-dim);cursor:pointer;padding:2px 6px;font-size:9px;font-family:var(--mono)">↻</button>' +
@@ -1393,7 +1408,7 @@ function readSubFile(file) {
   reader.onload = function(e) {
     subFileContent = e.target.result;
     document.getElementById('sub-file-label').innerHTML =
-      '<span style="color:var(--fg)">✅ ' + file.name + '</span><br>' +
+      '<span style="color:var(--fg)">✅ ' + escapeHtml(file.name) + '</span><br>' +
       '<span style="font-size:9px;opacity:0.6">' + (subFileContent.length / 1024).toFixed(1) + ' KB</span>';
   };
   reader.readAsText(file);
@@ -1480,88 +1495,6 @@ async function deleteSub(id) {
     body: JSON.stringify({id: id})
   });
   loadSubscriptions();
-}
-
-// ========== 访客贡献订阅 ==========
-
-let contributeFileContent = '';
-let contributeTab = 'url';
-
-function switchContributeTab(tab) {
-  contributeTab = tab;
-  document.getElementById('contribute-url-group').style.display = tab === 'url' ? '' : 'none';
-  document.getElementById('contribute-file-group').style.display = tab === 'file' ? '' : 'none';
-  document.getElementById('ctab-url').className = tab === 'url' ? 'ctrl-btn-primary' : 'ctrl-btn-secondary';
-  document.getElementById('ctab-file').className = tab === 'file' ? 'ctrl-btn-primary' : 'ctrl-btn-secondary';
-}
-
-function handleContributeFileSelect(input) {
-  if (input.files && input.files[0]) readContributeFile(input.files[0]);
-}
-function handleContributeFileDrop(e) {
-  if (e.dataTransfer.files && e.dataTransfer.files[0]) readContributeFile(e.dataTransfer.files[0]);
-}
-function readContributeFile(file) {
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    contributeFileContent = e.target.result;
-    document.getElementById('contribute-file-label').innerHTML =
-      '<span style="color:var(--fg)">✅ ' + file.name + '</span><br>' +
-      '<span style="font-size:9px;opacity:0.6">' + (contributeFileContent.length / 1024).toFixed(1) + ' KB</span>';
-  };
-  reader.readAsText(file);
-}
-
-function openContributeModal() {
-  contributeFileContent = '';
-  contributeTab = 'url';
-  switchContributeTab('url');
-  document.getElementById('contribute-modal').style.display = 'flex';
-}
-
-function closeContributeModal() {
-  document.getElementById('contribute-modal').style.display = 'none';
-}
-
-async function submitContribution() {
-  const name = document.getElementById('contribute-name').value || t('contribute.title');
-  const data = { name };
-
-  if (contributeTab === 'url') {
-    const url = document.getElementById('contribute-url').value;
-    if (!url) { alert(t('msg.sub_url_required')); return; }
-    data.url = url;
-  } else {
-    if (!contributeFileContent) { alert(t('msg.sub_file_required')); return; }
-    data.file_content = contributeFileContent;
-  }
-
-  const btn = document.getElementById('contribute-submit-btn');
-  btn.textContent = t('contribute.validating');
-  btn.disabled = true;
-
-  const result = await api('/api/subscription/contribute', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(data)
-  });
-
-  btn.textContent = t('contribute.submit');
-  btn.disabled = false;
-
-  if (result && result.error) {
-    alert(t('msg.submit_failed') + result.error);
-    return;
-  }
-  if (result && result.status === 'contributed') {
-    closeContributeModal();
-    showToast(t('msg.contribute_thanks'));
-    document.getElementById('contribute-name').value = '';
-    document.getElementById('contribute-url').value = '';
-    contributeFileContent = '';
-    document.getElementById('contribute-file-label').innerHTML = '' + t('sub.file_drop') + '';
-    setTimeout(loadSubscriptions, 3000);
-  }
 }
 
 loadAll();

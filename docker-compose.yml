@@ -10,11 +10,12 @@ services:
     container_name: ${CONTAINER_NAME:-goproxy}
     restart: unless-stopped
     ports:
-      - "${STABLE_PORT:-7776}:7776"          # HTTP 最低延迟
-      - "${RANDOM_PORT:-7777}:7777"          # HTTP 随机轮换
-      - "${WEBUI_PORT:-7778}:7778"           # WebUI（有登录认证）
-      - "${SOCKS5_RANDOM_PORT:-7779}:7779"   # SOCKS5 随机轮换
-      - "${SOCKS5_STABLE_PORT:-7780}:7780"   # SOCKS5 最低延迟
+      # 私有部署默认仅绑定本机回环地址；如需跨机器访问，请优先使用 SSH 隧道 / WireGuard / Tailscale
+      - "127.0.0.1:${STABLE_PORT:-7776}:7776"          # HTTP 最低延迟
+      - "127.0.0.1:${RANDOM_PORT:-7777}:7777"          # HTTP 随机轮换
+      - "127.0.0.1:${WEBUI_PORT:-7778}:7778"           # WebUI（建议仅通过隧道访问）
+      - "127.0.0.1:${SOCKS5_RANDOM_PORT:-7779}:7779"   # SOCKS5 随机轮换
+      - "127.0.0.1:${SOCKS5_STABLE_PORT:-7780}:7780"   # SOCKS5 最低延迟
     volumes:
       - goproxy-data:/app/data
     environment:

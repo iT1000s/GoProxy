@@ -25,6 +25,12 @@ type Server struct {
 	port    string
 }
 
+const (
+	proxyReadHeaderTimeout = 5 * time.Second
+	proxyIdleTimeout       = 60 * time.Second
+	proxyMaxHeaderBytes    = 1 << 20
+)
+
 func New(s *storage.Storage, cfg *config.Config, mode string, port string) *Server {
 	return &Server{
 		storage: s,
@@ -44,7 +50,14 @@ func (s *Server) Start() error {
 		authStatus = fmt.Sprintf("需认证 (用户: %s)", s.cfg.ProxyAuthUsername)
 	}
 	log.Printf("proxy server listening on %s [%s] [%s]", s.port, modeDesc, authStatus)
-	return http.ListenAndServe(s.port, s)
+	srv := &http.Server{
+		Addr:              s.port,
+		Handler:           s,
+		ReadHeaderTimeout: proxyReadHeaderTimeout,
+		IdleTimeout:       proxyIdleTimeout,
+		MaxHeaderBytes:    proxyMaxHeaderBytes,
+	}
+	return srv.ListenAndServe()
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +69,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	
+
 	if r.Method == http.MethodConnect {
 		s.handleTunnel(w, r)
 	} else {
@@ -70,31 +83,31 @@ func (s *Server) checkAuth(r *http.Request) bool {
 	if auth == "" {
 		return false
 	}
-	
+
 	// 解析 Basic Auth
 	const prefix = "Basic "
 	if !strings.HasPrefix(auth, prefix) {
 		return false
 	}
-	
+
 	decoded, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
 	if err != nil {
 		return false
 	}
-	
+
 	credentials := strings.SplitN(string(decoded), ":", 2)
 	if len(credentials) != 2 {
 		return false
 	}
-	
+
 	username := credentials[0]
 	password := credentials[1]
-	
+
 	// 验证用户名和密码
 	usernameMatch := subtle.ConstantTimeCompare([]byte(username), []byte(s.cfg.ProxyAuthUsername)) == 1
 	passwordHash := fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
 	passwordMatch := subtle.ConstantTimeCompare([]byte(passwordHash), []byte(s.cfg.ProxyAuthPasswordHash)) == 1
-	
+
 	return usernameMatch && passwordMatch
 }
 
@@ -177,7 +190,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		req.Header = r.Header.Clone()
-		req.Header.Del("Proxy-Connection")
+		stripHopByHopHeaders(req.Header)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -317,4 +330,20 @@ func transfer(dst io.WriteCloser, src io.ReadCloser) {
 	defer dst.Close()
 	defer src.Close()
 	io.Copy(dst, src)
+}
+
+func stripHopByHopHeaders(header http.Header) {
+	for _, key := range []string{
+		"Proxy-Authorization",
+		"Proxy-Authenticate",
+		"Proxy-Connection",
+		"Connection",
+		"Keep-Alive",
+		"Te",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+	} {
+		header.Del(key)
+	}
 }

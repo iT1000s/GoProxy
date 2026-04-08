@@ -1,13 +1,18 @@
 package webui
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,8 +30,22 @@ var (
 	sessionsMu sync.Mutex
 )
 
+const (
+	defaultJSONBodyMaxBytes      int64 = 64 << 10
+	subscriptionJSONBodyMaxBytes int64 = 4 << 20
+	webUIReadHeaderTimeout             = 5 * time.Second
+	webUIReadTimeout                   = 15 * time.Second
+	webUIWriteTimeout                  = 30 * time.Second
+	webUIIdleTimeout                   = 60 * time.Second
+	webUIMaxHeaderBytes                = 1 << 20
+)
+
 func newSession() string {
-	token := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano()))))
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		panic(fmt.Sprintf("generate session token: %v", err))
+	}
+	token := hex.EncodeToString(tokenBytes)
 	sessionsMu.Lock()
 	sessions[token] = time.Now().Add(24 * time.Hour)
 	sessionsMu.Unlock()
@@ -42,6 +61,13 @@ func validSession(r *http.Request) bool {
 	expiry, ok := sessions[cookie.Value]
 	sessionsMu.Unlock()
 	return ok && time.Now().Before(expiry)
+}
+
+func isSecureRequest(r *http.Request) bool {
+	if r != nil && r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
 type FetchTrigger func()
@@ -68,27 +94,27 @@ func New(s *storage.Storage, cfg *config.Config, pm *pool.Manager, cm *custom.Ma
 
 func (s *Server) Start() {
 	mux := http.NewServeMux()
-	
+
 	// 添加日志中间件
 	loggedMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[webui] %s %s | Host: %s | RemoteAddr: %s", 
+		log.Printf("[webui] %s %s | Host: %s | RemoteAddr: %s",
 			r.Method, r.URL.Path, r.Host, r.RemoteAddr)
 		mux.ServeHTTP(w, r)
 	})
-	
+
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
-	
+
 	// 只读 API（访客可访问）
 	mux.HandleFunc("/api/stats", s.readOnlyMiddleware(s.apiStats))
-	mux.HandleFunc("/api/proxies", s.readOnlyMiddleware(s.apiProxies))
-	mux.HandleFunc("/api/logs", s.readOnlyMiddleware(s.apiLogs))
+	mux.HandleFunc("/api/proxies", s.authMiddleware(s.apiProxies))
+	mux.HandleFunc("/api/logs", s.authMiddleware(s.apiLogs))
 	mux.HandleFunc("/api/pool/status", s.readOnlyMiddleware(s.apiPoolStatus))
 	mux.HandleFunc("/api/pool/quality", s.readOnlyMiddleware(s.apiQualityDistribution))
-	mux.HandleFunc("/api/config", s.readOnlyMiddleware(s.apiConfig))
+	mux.HandleFunc("/api/config", s.authMiddleware(s.apiConfig))
 	mux.HandleFunc("/api/auth/check", s.apiAuthCheck) // 检查登录状态
-	
+
 	// 管理员 API（需要登录）
 	mux.HandleFunc("/api/proxy/delete", s.authMiddleware(s.apiDeleteProxy))
 	mux.HandleFunc("/api/proxy/refresh", s.authMiddleware(s.apiRefreshProxy))
@@ -97,9 +123,9 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/config/save", s.authMiddleware(s.apiConfigSave))
 
 	// 订阅管理 API
-	mux.HandleFunc("/api/subscriptions", s.readOnlyMiddleware(s.apiSubscriptions))
-	mux.HandleFunc("/api/custom/status", s.readOnlyMiddleware(s.apiCustomStatus))
-	mux.HandleFunc("/api/subscription/contribute", s.apiSubscriptionContribute) // 访客可用
+	mux.HandleFunc("/api/subscriptions", s.authMiddleware(s.apiSubscriptions))
+	mux.HandleFunc("/api/custom/status", s.authMiddleware(s.apiCustomStatus))
+	mux.HandleFunc("/api/subscription/contribute", s.apiSubscriptionContribute)
 	mux.HandleFunc("/api/subscription/add", s.authMiddleware(s.apiSubscriptionAdd))
 	mux.HandleFunc("/api/subscription/delete", s.authMiddleware(s.apiSubscriptionDelete))
 	mux.HandleFunc("/api/subscription/refresh", s.authMiddleware(s.apiSubscriptionRefresh))
@@ -108,7 +134,16 @@ func (s *Server) Start() {
 
 	log.Printf("WebUI listening on %s", s.cfg.WebUIPort)
 	go func() {
-		if err := http.ListenAndServe(s.cfg.WebUIPort, loggedMux); err != nil {
+		srv := &http.Server{
+			Addr:              s.cfg.WebUIPort,
+			Handler:           loggedMux,
+			ReadHeaderTimeout: webUIReadHeaderTimeout,
+			ReadTimeout:       webUIReadTimeout,
+			WriteTimeout:      webUIWriteTimeout,
+			IdleTimeout:       webUIIdleTimeout,
+			MaxHeaderBytes:    webUIMaxHeaderBytes,
+		}
+		if err := srv.ListenAndServe(); err != nil {
 			log.Fatalf("webui: %v", err)
 		}
 	}()
@@ -163,6 +198,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Expires:  time.Now().Add(24 * time.Hour),
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   isSecureRequest(r),
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
@@ -182,7 +219,7 @@ func (s *Server) apiAuthCheck(w http.ResponseWriter, r *http.Request) {
 	isAdmin := validSession(r)
 	jsonOK(w, map[string]interface{}{
 		"isAdmin": isAdmin,
-		"mode":    func() string {
+		"mode": func() string {
 			if isAdmin {
 				return "admin"
 			}
@@ -229,7 +266,10 @@ func (s *Server) apiDeleteProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Address string `json:"address"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Address == "" {
+	if err := decodeJSONBody(w, r, &req, defaultJSONBodyMaxBytes); err != nil {
+		return
+	}
+	if req.Address == "" {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -245,7 +285,10 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Address string `json:"address"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Address == "" {
+	if err := decodeJSONBody(w, r, &req, defaultJSONBodyMaxBytes); err != nil {
+		return
+	}
+	if req.Address == "" {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -256,7 +299,7 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to get proxy", http.StatusInternalServerError)
 		return
 	}
-	
+
 	var targetProxy *storage.Proxy
 	for i := range proxies {
 		if proxies[i].Address == req.Address {
@@ -264,7 +307,7 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	
+
 	if targetProxy == nil {
 		jsonError(w, "proxy not found", http.StatusNotFound)
 		return
@@ -274,10 +317,10 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		cfg := config.Get()
 		v := validator.New(1, cfg.ValidateTimeout, cfg.ValidateURL)
-		
+
 		log.Printf("[webui] refreshing proxy: %s", req.Address)
 		valid, latency, exitIP, exitLocation := v.ValidateOne(*targetProxy)
-		
+
 		if valid {
 			latencyMs := int(latency.Milliseconds())
 			s.storage.UpdateExitInfo(req.Address, exitIP, exitLocation, latencyMs)
@@ -354,35 +397,35 @@ func (s *Server) apiLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
 	httpSlots, socks5Slots := cfg.CalculateSlots()
-	
+
 	jsonOK(w, map[string]interface{}{
 		// 池子配置
-		"pool_max_size":        cfg.PoolMaxSize,
-		"pool_http_ratio":      cfg.PoolHTTPRatio,
+		"pool_max_size":         cfg.PoolMaxSize,
+		"pool_http_ratio":       cfg.PoolHTTPRatio,
 		"pool_min_per_protocol": cfg.PoolMinPerProtocol,
-		"pool_http_slots":      httpSlots,
-		"pool_socks5_slots":    socks5Slots,
+		"pool_http_slots":       httpSlots,
+		"pool_socks5_slots":     socks5Slots,
 
 		// 延迟配置
-		"max_latency_ms":         cfg.MaxLatencyMs,
-		"max_latency_emergency":  cfg.MaxLatencyEmergency,
-		"max_latency_healthy":    cfg.MaxLatencyHealthy,
+		"max_latency_ms":        cfg.MaxLatencyMs,
+		"max_latency_emergency": cfg.MaxLatencyEmergency,
+		"max_latency_healthy":   cfg.MaxLatencyHealthy,
 
 		// 验证配置
-		"validate_concurrency":   cfg.ValidateConcurrency,
-		"validate_timeout":       cfg.ValidateTimeout,
+		"validate_concurrency": cfg.ValidateConcurrency,
+		"validate_timeout":     cfg.ValidateTimeout,
 
 		// 健康检查配置
-		"health_check_interval":  cfg.HealthCheckInterval,
+		"health_check_interval":   cfg.HealthCheckInterval,
 		"health_check_batch_size": cfg.HealthCheckBatchSize,
 
 		// 优化配置
-		"optimize_interval":      cfg.OptimizeInterval,
-		"replace_threshold":      cfg.ReplaceThreshold,
+		"optimize_interval": cfg.OptimizeInterval,
+		"replace_threshold": cfg.ReplaceThreshold,
 
 		// 地理过滤配置
-		"blocked_countries":      cfg.BlockedCountries,
-		"allowed_countries":      cfg.AllowedCountries,
+		"blocked_countries": cfg.BlockedCountries,
+		"allowed_countries": cfg.AllowedCountries,
 
 		// 自定义订阅代理配置
 		"custom_proxy_mode":       cfg.CustomProxyMode,
@@ -422,8 +465,7 @@ func (s *Server) apiConfigSave(w http.ResponseWriter, r *http.Request) {
 		CustomRefreshInterval int      `json:"custom_refresh_interval"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request", http.StatusBadRequest)
+	if err := decodeJSONBody(w, r, &req, defaultJSONBodyMaxBytes); err != nil {
 		return
 	}
 
@@ -531,8 +573,20 @@ func (s *Server) apiSubscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 附加每个订阅的代理统计
+	type subscriptionView struct {
+		ID          int64     `json:"id"`
+		Name        string    `json:"name"`
+		Format      string    `json:"format"`
+		RefreshMin  int       `json:"refresh_min"`
+		LastFetch   time.Time `json:"last_fetch"`
+		LastSuccess time.Time `json:"last_success"`
+		Status      string    `json:"status"`
+		ProxyCount  int       `json:"proxy_count"`
+		CreatedAt   time.Time `json:"created_at"`
+		Contributed bool      `json:"contributed"`
+	}
 	type subWithStats struct {
-		storage.Subscription
+		subscriptionView
 		ActiveCount   int `json:"active_count"`
 		DisabledCount int `json:"disabled_count"`
 	}
@@ -540,7 +594,18 @@ func (s *Server) apiSubscriptions(w http.ResponseWriter, r *http.Request) {
 	for _, sub := range subs {
 		active, disabled := s.storage.CountBySubscriptionID(sub.ID)
 		result = append(result, subWithStats{
-			Subscription:  sub,
+			subscriptionView: subscriptionView{
+				ID:          sub.ID,
+				Name:        sub.Name,
+				Format:      sub.Format,
+				RefreshMin:  sub.RefreshMin,
+				LastFetch:   sub.LastFetch,
+				LastSuccess: sub.LastSuccess,
+				Status:      sub.Status,
+				ProxyCount:  sub.ProxyCount,
+				CreatedAt:   sub.CreatedAt,
+				Contributed: sub.Contributed,
+			},
 			ActiveCount:   active,
 			DisabledCount: disabled,
 		})
@@ -565,90 +630,7 @@ func (s *Server) apiCustomStatus(w http.ResponseWriter, r *http.Request) {
 
 // apiSubscriptionContribute 访客贡献订阅（支持 URL 和文件上传，需验证通过才入库）
 func (s *Server) apiSubscriptionContribute(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		Name        string `json:"name"`
-		URL         string `json:"url"`
-		FileContent string `json:"file_content"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-	if req.URL == "" && req.FileContent == "" {
-		jsonError(w, "请填写订阅 URL 或上传配置文件", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" {
-		req.Name = "贡献订阅"
-	}
-
-	// 如果上传了文件，保存到本地
-	filePath := ""
-	if req.FileContent != "" {
-		dataDir := os.Getenv("DATA_DIR")
-		if dataDir == "" {
-			dataDir = "."
-		}
-		subDir := filepath.Join(dataDir, "subscriptions")
-		os.MkdirAll(subDir, 0755)
-		filePath = filepath.Join(subDir, fmt.Sprintf("contribute_%d.yaml", time.Now().UnixMilli()))
-		if err := os.WriteFile(filePath, []byte(req.FileContent), 0644); err != nil {
-			jsonError(w, "保存文件失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		filePath, _ = filepath.Abs(filePath)
-	}
-
-	// 先验证能解析出节点
-	if s.customMgr != nil {
-		nodeCount, err := s.customMgr.ValidateSubscription(req.URL, filePath)
-		if err != nil {
-			if filePath != "" {
-				os.Remove(filePath)
-			}
-			jsonError(w, "订阅验证失败: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		log.Printf("[webui] 访客贡献订阅验证通过: %s (%d 个节点)", req.Name, nodeCount)
-	}
-
-	// 入库
-	refreshMin := config.Get().CustomRefreshInterval
-	var id int64
-	var err error
-	if req.URL != "" {
-		id, err = s.storage.AddContributedSubscription(req.Name, req.URL, refreshMin)
-	} else {
-		// 文件上传的贡献，用 AddSubscription + contributed 标记
-		id, err = s.storage.AddSubscription(req.Name, "", filePath, "auto", refreshMin)
-		if err == nil {
-			// 标记为贡献
-			s.storage.GetDB().Exec(`UPDATE subscriptions SET contributed = 1 WHERE id = ?`, id)
-		}
-	}
-	if err != nil {
-		if filePath != "" {
-			os.Remove(filePath)
-		}
-		jsonError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// 异步刷新入池
-	if s.customMgr != nil {
-		go func() {
-			if err := s.customMgr.RefreshSubscription(id); err != nil {
-				log.Printf("[webui] 贡献订阅刷新失败: %v", err)
-			}
-		}()
-	}
-
-	log.Printf("[webui] 🎁 访客贡献订阅: %s (url=%v file=%v)", req.Name, req.URL != "", filePath != "")
-	jsonOK(w, map[string]interface{}{"status": "contributed", "id": id})
+	jsonError(w, "anonymous subscription contribution disabled", http.StatusForbidden)
 }
 
 // apiSubscriptionAdd 添加订阅
@@ -663,8 +645,7 @@ func (s *Server) apiSubscriptionAdd(w http.ResponseWriter, r *http.Request) {
 		FileContent string `json:"file_content"` // 上传的文件内容（Base64 编码）
 		RefreshMin  int    `json:"refresh_min"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request", http.StatusBadRequest)
+	if err := decodeJSONBody(w, r, &req, subscriptionJSONBodyMaxBytes); err != nil {
 		return
 	}
 	if req.URL == "" && req.FileContent == "" {
@@ -737,7 +718,10 @@ func (s *Server) apiSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID <= 0 {
+	if err := decodeJSONBody(w, r, &req, defaultJSONBodyMaxBytes); err != nil {
+		return
+	}
+	if req.ID <= 0 {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -773,7 +757,10 @@ func (s *Server) apiSubscriptionRefresh(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID <= 0 {
+	if err := decodeJSONBody(w, r, &req, defaultJSONBodyMaxBytes); err != nil {
+		return
+	}
+	if req.ID <= 0 {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -812,7 +799,10 @@ func (s *Server) apiSubscriptionToggle(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID <= 0 {
+	if err := decodeJSONBody(w, r, &req, defaultJSONBodyMaxBytes); err != nil {
+		return
+	}
+	if req.ID <= 0 {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -834,4 +824,30 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var syntaxErr *json.SyntaxError
+		var unmarshalTypeErr *json.UnmarshalTypeError
+		switch {
+		case errors.As(err, &syntaxErr), errors.Is(err, io.ErrUnexpectedEOF):
+			jsonError(w, "invalid request", http.StatusBadRequest)
+		case errors.As(err, &unmarshalTypeErr):
+			jsonError(w, "invalid request", http.StatusBadRequest)
+		case strings.HasPrefix(err.Error(), "http: request body too large"):
+			jsonError(w, "request body too large", http.StatusRequestEntityTooLarge)
+		default:
+			jsonError(w, "invalid request", http.StatusBadRequest)
+		}
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return err
+	}
+	return nil
 }
