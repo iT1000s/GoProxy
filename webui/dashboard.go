@@ -1114,7 +1114,10 @@ async function loadProxies() {
     });
   }
 
-  const path = currentProtocol ? '/api/proxies?protocol=' + currentProtocol : '/api/proxies';
+  const params = new URLSearchParams();
+  if (currentProtocol) params.set('protocol', currentProtocol);
+  if (isAdmin) params.set('include_disabled', '1');
+  const path = params.toString() ? '/api/proxies?' + params.toString() : '/api/proxies';
   const proxies = await api(path);
   if (!proxies) return;
 
@@ -1206,8 +1209,12 @@ function renderProxies(proxies) {
       const address = p.address || '';
       const safeAddress = escapeHtml(address || '—');
       const addressArg = escapeJSString(address);
-      
-      const rowStyle = p.source === 'custom' ? ' style="border-left:2px solid var(--yellow)"' : '';
+
+      let rowStyle = p.source === 'custom' ? 'border-left:2px solid var(--yellow);' : '';
+      if (p.status === 'disabled') {
+        rowStyle += 'opacity:0.55;';
+      }
+      rowStyle = rowStyle ? ' style="' + rowStyle + '"' : '';
       html += '<tr' + rowStyle + '>';
       html += '<td class="cell-grade grade-' + grade + '">' + escapeHtml(p.quality_grade || 'C') + '</td>';
       html += '<td><span class="badge badge-' + escapeHtml(p.protocol) + '">' + escapeHtml((p.protocol || '').toUpperCase()) + '</span>';
@@ -1215,6 +1222,9 @@ function renderProxies(proxies) {
         const subName = escapeHtml(subNameMap[p.subscription_id] || t('sub.add_title'));
         const subProviderBadge = renderSubscriptionProviderBadge(subProviderMap[p.subscription_id] || '');
         html += ' <span style="display:inline-block;background:var(--yellow);color:#000;font-size:8px;font-weight:700;padding:1px 4px;margin-left:4px;letter-spacing:0.05em">' + subName + '</span>' + subProviderBadge;
+      }
+      if (p.status === 'disabled') {
+        html += ' <span style="display:inline-block;background:var(--red);color:#000;font-size:8px;font-weight:700;padding:1px 4px;margin-left:4px;letter-spacing:0.05em">DISABLED</span>';
       }
       html += '</td>';
       html += '<td class="cell-mono cell-clickable" onclick="copyToClipboard(\'' + addressArg + '\')" title="Copy">' + safeAddress + '</td>';

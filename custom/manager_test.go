@@ -34,3 +34,14 @@ func TestValidateSubscriptionURLRejectsUnsafeTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldKeepCustomProxyOnValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	if !shouldKeepCustomProxyOnValidationFailure("proxyscrape") {
+		t.Fatal("expected proxyscrape provider to keep proxies on validation failure")
+	}
+	if shouldKeepCustomProxyOnValidationFailure("manual") {
+		t.Fatal("expected non-proxyscrape provider not to keep proxies on validation failure")
+	}
+}

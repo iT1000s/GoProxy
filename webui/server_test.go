@@ -186,3 +186,50 @@ func TestAPISubscriptionAddStoresDefaultProtocol(t *testing.T) {
 		t.Fatalf("expected provider proxyscrape, got %q", subs[0].Provider)
 	}
 }
+
+func TestAPIProxiesIncludeDisabled(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := storage.New(dbPath)
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.AddProxyWithSource("1.1.1.1:80", "http", "custom", 1); err != nil {
+		t.Fatalf("AddProxyWithSource: %v", err)
+	}
+	if err := store.AddProxyWithSource("2.2.2.2:80", "http", "custom", 1); err != nil {
+		t.Fatalf("AddProxyWithSource: %v", err)
+	}
+	if err := store.DisableProxy("2.2.2.2:80"); err != nil {
+		t.Fatalf("DisableProxy: %v", err)
+	}
+
+	s := &Server{storage: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/proxies?include_disabled=1", nil)
+	rec := httptest.NewRecorder()
+
+	s.apiProxies(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var proxies []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &proxies); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(proxies) != 2 {
+		t.Fatalf("expected 2 proxies, got %d", len(proxies))
+	}
+
+	statuses := map[string]string{}
+	for _, p := range proxies {
+		addr, _ := p["address"].(string)
+		status, _ := p["status"].(string)
+		statuses[addr] = status
+	}
+	if statuses["2.2.2.2:80"] != "disabled" {
+		t.Fatalf("expected disabled proxy to be present, got statuses=%v", statuses)
+	}
+}

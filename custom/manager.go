@@ -306,7 +306,7 @@ func (m *Manager) RefreshSubscription(subID int64) error {
 	}
 
 	// 验证新入池的代理
-	go m.validateCustomProxies(allProxies, subID)
+	go m.validateCustomProxies(allProxies, subID, sub.Provider)
 
 	// 更新订阅信息（记录实际入池的代理数）
 	m.storage.UpdateSubscriptionFetch(subID, len(allProxies))
@@ -462,7 +462,11 @@ func (m *Manager) fetchURL(urlStr string, p *storage.Proxy) ([]byte, error) {
 }
 
 // validateCustomProxies 验证订阅代理，返回可用数
-func (m *Manager) validateCustomProxies(proxies []storage.Proxy, subID int64) int {
+func shouldKeepCustomProxyOnValidationFailure(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "proxyscrape")
+}
+
+func (m *Manager) validateCustomProxies(proxies []storage.Proxy, subID int64, provider string) int {
 	if len(proxies) == 0 {
 		return 0
 	}
@@ -470,6 +474,7 @@ func (m *Manager) validateCustomProxies(proxies []storage.Proxy, subID int64) in
 	log.Printf("[custom] 🔍 开始验证 %d 个订阅代理", len(proxies))
 
 	cfg := config.Get()
+	keepOnFailure := shouldKeepCustomProxyOnValidationFailure(provider)
 	resultCh := m.validator.ValidateStream(proxies)
 	valid, invalid := 0, 0
 	for result := range resultCh {
@@ -485,6 +490,11 @@ func (m *Manager) validateCustomProxies(proxies []storage.Proxy, subID int64) in
 				valid++
 			}
 		} else {
+			if keepOnFailure {
+				log.Printf("[custom] ProxyScrape 代理 %s 初始验证失败，保留为可用待实际使用验证", result.Proxy.Address)
+				valid++
+				continue
+			}
 			invalid++
 			m.storage.DisableProxy(result.Proxy.Address)
 		}

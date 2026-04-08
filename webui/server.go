@@ -244,12 +244,21 @@ func (s *Server) apiStats(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiProxies(w http.ResponseWriter, r *http.Request) {
 	protocol := r.URL.Query().Get("protocol")
+	includeDisabled := r.URL.Query().Get("include_disabled") == "1"
 	var proxies []storage.Proxy
 	var err error
 	if protocol != "" {
-		proxies, err = s.storage.GetByProtocol(protocol)
+		if includeDisabled {
+			proxies, err = s.storage.GetByProtocolIncludingDisabled(protocol)
+		} else {
+			proxies, err = s.storage.GetByProtocol(protocol)
+		}
 	} else {
-		proxies, err = s.storage.GetAll()
+		if includeDisabled {
+			proxies, err = s.storage.GetAllIncludingDisabled()
+		} else {
+			proxies, err = s.storage.GetAll()
+		}
 	}
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)

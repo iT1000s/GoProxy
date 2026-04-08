@@ -413,6 +413,35 @@ func (s *Storage) GetAll() ([]Proxy, error) {
 	return s.GetAllFiltered("")
 }
 
+// GetAllIncludingDisabled 获取所有代理（包含 disabled）
+func (s *Storage) GetAllIncludingDisabled() ([]Proxy, error) {
+	rows, err := s.db.Query(
+		`SELECT ` + proxyColumns + `
+		 FROM proxies
+		 ORDER BY
+		   CASE status
+		     WHEN 'active' THEN 1
+		     WHEN 'degraded' THEN 2
+		     ELSE 3
+		   END,
+		   latency ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var proxies []Proxy
+	for rows.Next() {
+		p, err := scanProxy(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, *p)
+	}
+	return proxies, nil
+}
+
 // GetAllFiltered 获取可用代理（可按来源过滤）
 // sourceFilter: "" = 全部, "free" = 仅免费, "custom" = 仅订阅
 func (s *Storage) GetAllFiltered(sourceFilter string) ([]Proxy, error) {
@@ -927,6 +956,36 @@ func (s *Storage) GetByProtocol(protocol string) ([]Proxy, error) {
 		 FROM proxies
 		 WHERE status IN ('active', 'degraded') AND fail_count < 3 AND protocol = ?
 		 ORDER BY latency ASC`, protocol,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var proxies []Proxy
+	for rows.Next() {
+		p, err := scanProxy(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, *p)
+	}
+	return proxies, nil
+}
+
+// GetByProtocolIncludingDisabled 按协议获取代理列表（包含 disabled）
+func (s *Storage) GetByProtocolIncludingDisabled(protocol string) ([]Proxy, error) {
+	rows, err := s.db.Query(
+		`SELECT `+proxyColumns+`
+		 FROM proxies
+		 WHERE protocol = ?
+		 ORDER BY
+		   CASE status
+		     WHEN 'active' THEN 1
+		     WHEN 'degraded' THEN 2
+		     ELSE 3
+		   END,
+		   latency ASC`, protocol,
 	)
 	if err != nil {
 		return nil, err
