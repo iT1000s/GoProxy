@@ -12,38 +12,40 @@ import (
 )
 
 type Proxy struct {
-	ID           int64     `json:"id"`
-	Address      string    `json:"address"`
-	Protocol     string    `json:"protocol"`
-	ExitIP       string    `json:"exit_ip"`
-	ExitLocation string    `json:"exit_location"`
-	Latency      int       `json:"latency"`
-	QualityGrade string    `json:"quality_grade"`
-	UseCount     int       `json:"use_count"`
-	SuccessCount int       `json:"success_count"`
-	FailCount    int       `json:"fail_count"`
-	LastUsed     time.Time `json:"last_used"`
-	LastCheck    time.Time `json:"last_check"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID             int64     `json:"id"`
+	Address        string    `json:"address"`
+	Protocol       string    `json:"protocol"`
+	ExitIP         string    `json:"exit_ip"`
+	ExitLocation   string    `json:"exit_location"`
+	Latency        int       `json:"latency"`
+	QualityGrade   string    `json:"quality_grade"`
+	UseCount       int       `json:"use_count"`
+	SuccessCount   int       `json:"success_count"`
+	FailCount      int       `json:"fail_count"`
+	LastUsed       time.Time `json:"last_used"`
+	LastCheck      time.Time `json:"last_check"`
+	CreatedAt      time.Time `json:"created_at"`
 	Status         string    `json:"status"`
 	Source         string    `json:"source"`          // "free" 或 "custom"
-	SubscriptionID int64    `json:"subscription_id"` // 所属订阅ID（0=免费代理）
+	SubscriptionID int64     `json:"subscription_id"` // 所属订阅ID（0=免费代理）
 }
 
 // Subscription 订阅信息
 type Subscription struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	URL         string    `json:"url"`
-	FilePath    string    `json:"file_path"`
-	Format      string    `json:"format"` // clash / plain / base64 / auto
-	RefreshMin  int       `json:"refresh_min"`
-	LastFetch   time.Time `json:"last_fetch"`
-	LastSuccess time.Time `json:"last_success"` // 最后一次有可用节点的时间
-	Status      string    `json:"status"`       // active / paused
-	ProxyCount  int       `json:"proxy_count"`
-	CreatedAt   time.Time `json:"created_at"`
-	Contributed bool      `json:"contributed"` // 是否为访客贡献
+	ID              int64     `json:"id"`
+	Name            string    `json:"name"`
+	URL             string    `json:"url"`
+	FilePath        string    `json:"file_path"`
+	Format          string    `json:"format"` // clash / plain / base64 / auto
+	Provider        string    `json:"provider"`
+	DefaultProtocol string    `json:"default_protocol"`
+	RefreshMin      int       `json:"refresh_min"`
+	LastFetch       time.Time `json:"last_fetch"`
+	LastSuccess     time.Time `json:"last_success"` // 最后一次有可用节点的时间
+	Status          string    `json:"status"`       // active / paused
+	ProxyCount      int       `json:"proxy_count"`
+	CreatedAt       time.Time `json:"created_at"`
+	Contributed     bool      `json:"contributed"` // 是否为访客贡献
 }
 
 // SourceStatus 代理源状态
@@ -55,7 +57,7 @@ type SourceStatus struct {
 	ConsecutiveFails int
 	LastSuccess      time.Time
 	LastFail         time.Time
-	Status           string    // active/degraded/disabled
+	Status           string // active/degraded/disabled
 	DisabledUntil    time.Time
 }
 
@@ -216,6 +218,8 @@ func (s *Storage) initSchema() error {
 			url           TEXT NOT NULL DEFAULT '',
 			file_path     TEXT NOT NULL DEFAULT '',
 			format        TEXT NOT NULL DEFAULT 'clash',
+			provider      TEXT NOT NULL DEFAULT '',
+			default_protocol TEXT NOT NULL DEFAULT '',
 			refresh_min   INTEGER NOT NULL DEFAULT 60,
 			last_fetch    DATETIME,
 			status        TEXT NOT NULL DEFAULT 'active',
@@ -238,6 +242,16 @@ func (s *Storage) initSchema() error {
 	if hasLastSuccess == 0 {
 		s.db.Exec(`ALTER TABLE subscriptions ADD COLUMN last_success DATETIME`)
 	}
+	var hasDefaultProtocol int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('subscriptions') WHERE name='default_protocol'`).Scan(&hasDefaultProtocol)
+	if hasDefaultProtocol == 0 {
+		s.db.Exec(`ALTER TABLE subscriptions ADD COLUMN default_protocol TEXT NOT NULL DEFAULT ''`)
+	}
+	var hasProvider int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('subscriptions') WHERE name='provider'`).Scan(&hasProvider)
+	if hasProvider == 0 {
+		s.db.Exec(`ALTER TABLE subscriptions ADD COLUMN provider TEXT NOT NULL DEFAULT ''`)
+	}
 
 	return nil
 }
@@ -252,7 +266,7 @@ func (s *Storage) AddProxy(address, protocol string) error {
 		log.Printf("[storage] AddProxy %s error: %v", address, err)
 		return err
 	}
-	
+
 	// 检查是否真的插入了
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
@@ -284,29 +298,14 @@ func (s *Storage) AddProxies(proxies []Proxy) error {
 
 // GetRandom 随机取一个可用代理（优先选择质量高的）
 func (s *Storage) GetRandom() (*Proxy, error) {
-	rows, err := s.db.Query(
-		`SELECT `+proxyColumns+`
-		 FROM proxies
-		 WHERE status = 'active' AND fail_count < 3
-		 ORDER BY
-		   CASE quality_grade
-		     WHEN 'S' THEN 1
-		     WHEN 'A' THEN 2
-		     WHEN 'B' THEN 3
-		     ELSE 4
-		   END,
-		   RANDOM()
-		 LIMIT 1`,
-	)
+	proxies, err := s.GetAllFiltered("")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	if rows.Next() {
-		return scanProxy(rows)
+	if len(proxies) == 0 {
+		return nil, fmt.Errorf("no available proxy")
 	}
-	return nil, fmt.Errorf("no available proxy")
+	return pickWeightedProxy(proxies)
 }
 
 // proxyColumns 代理表查询的标准列列表
@@ -339,6 +338,74 @@ func scanProxy(rows *sql.Rows) (*Proxy, error) {
 		p.SubscriptionID = subID.Int64
 	}
 	return p, nil
+}
+
+func normalizeSubscriptionProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "", "auto":
+		return ""
+	case "http", "https":
+		return "http"
+	case "socks5", "socks4":
+		return "socks5"
+	default:
+		return ""
+	}
+}
+
+func normalizeSubscriptionProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "manual", "default":
+		return ""
+	case "proxyscrape":
+		return "proxyscrape"
+	default:
+		return ""
+	}
+}
+
+func proxySelectionWeight(p Proxy) int {
+	weight := 1
+	if p.Source == "custom" {
+		weight = 4
+	}
+	switch p.QualityGrade {
+	case "S":
+		weight += 2
+	case "A":
+		weight += 1
+	}
+	return weight
+}
+
+func pickWeightedProxy(proxies []Proxy) (*Proxy, error) {
+	totalWeight := 0
+	for _, p := range proxies {
+		totalWeight += proxySelectionWeight(p)
+	}
+	if totalWeight <= 0 {
+		return nil, fmt.Errorf("no available proxy")
+	}
+	return pickWeightedProxyByRoll(proxies, rand.Intn(totalWeight)), nil
+}
+
+func pickWeightedProxyByRoll(proxies []Proxy, roll int) *Proxy {
+	if len(proxies) == 0 {
+		return nil
+	}
+	if roll < 0 {
+		roll = 0
+	}
+	accumulated := 0
+	for i := range proxies {
+		accumulated += proxySelectionWeight(proxies[i])
+		if roll < accumulated {
+			proxy := proxies[i]
+			return &proxy
+		}
+	}
+	proxy := proxies[len(proxies)-1]
+	return &proxy
 }
 
 // GetAll 获取所有可用代理
@@ -407,8 +474,7 @@ func (s *Storage) GetRandomExcludeFiltered(excludes []string, sourceFilter strin
 		return s.GetRandom()
 	}
 
-	p := available[rand.Intn(len(available))]
-	return &p, nil
+	return pickWeightedProxy(available)
 }
 
 // GetLowestLatencyExclude 排除指定地址后获取延迟最低的代理
@@ -466,8 +532,7 @@ func (s *Storage) GetRandomByProtocolExcludeFiltered(protocol string, excludes [
 		return nil, fmt.Errorf("no %s proxy available", protocol)
 	}
 
-	proxy := available[time.Now().UnixNano()%int64(len(available))]
-	return &proxy, nil
+	return pickWeightedProxy(available)
 }
 
 // GetLowestLatencyByProtocolExclude 按协议获取最低延迟代理（排除已尝试的）
@@ -933,7 +998,7 @@ func (s *Storage) EnableProxy(address string) error {
 // GetDisabledCustomProxies 获取所有被禁用的订阅代理
 func (s *Storage) GetDisabledCustomProxies() ([]Proxy, error) {
 	rows, err := s.db.Query(
-		`SELECT `+proxyColumns+`
+		`SELECT ` + proxyColumns + `
 		 FROM proxies
 		 WHERE source = 'custom' AND status = 'disabled'`,
 	)
@@ -994,7 +1059,7 @@ func (s *Storage) DeleteCustomProxiesNotIn(addresses []string) (int64, error) {
 // ========== 订阅 CRUD ==========
 
 // AddSubscription 添加订阅（自动去重：相同 URL 或 file_path 不重复添加）
-func (s *Storage) AddSubscription(name, url, filePath, format string, refreshMin int) (int64, error) {
+func (s *Storage) AddSubscription(name, url, filePath, format, provider, defaultProtocol string, refreshMin int) (int64, error) {
 	// 去重检查
 	if url != "" {
 		var existID int64
@@ -1012,8 +1077,8 @@ func (s *Storage) AddSubscription(name, url, filePath, format string, refreshMin
 	}
 
 	res, err := s.db.Exec(
-		`INSERT INTO subscriptions (name, url, file_path, format, refresh_min) VALUES (?, ?, ?, ?, ?)`,
-		name, url, filePath, format, refreshMin,
+		`INSERT INTO subscriptions (name, url, file_path, format, provider, default_protocol, refresh_min) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		name, url, filePath, format, normalizeSubscriptionProvider(provider), normalizeSubscriptionProtocol(defaultProtocol), refreshMin,
 	)
 	if err != nil {
 		return 0, err
@@ -1047,7 +1112,7 @@ func (s *Storage) AddContributedSubscription(name, url string, refreshMin int) (
 	}
 
 	res, err := s.db.Exec(
-		`INSERT INTO subscriptions (name, url, format, refresh_min, contributed) VALUES (?, ?, 'auto', ?, 1)`,
+		`INSERT INTO subscriptions (name, url, format, provider, default_protocol, refresh_min, contributed) VALUES (?, ?, 'auto', '', '', ?, 1)`,
 		name, url, refreshMin,
 	)
 	if err != nil {
@@ -1057,10 +1122,10 @@ func (s *Storage) AddContributedSubscription(name, url string, refreshMin int) (
 }
 
 // UpdateSubscription 更新订阅
-func (s *Storage) UpdateSubscription(id int64, name, url, filePath, format string, refreshMin int) error {
+func (s *Storage) UpdateSubscription(id int64, name, url, filePath, format, provider, defaultProtocol string, refreshMin int) error {
 	_, err := s.db.Exec(
-		`UPDATE subscriptions SET name = ?, url = ?, file_path = ?, format = ?, refresh_min = ? WHERE id = ?`,
-		name, url, filePath, format, refreshMin, id,
+		`UPDATE subscriptions SET name = ?, url = ?, file_path = ?, format = ?, provider = ?, default_protocol = ?, refresh_min = ? WHERE id = ?`,
+		name, url, filePath, format, normalizeSubscriptionProvider(provider), normalizeSubscriptionProtocol(defaultProtocol), refreshMin, id,
 	)
 	return err
 }
@@ -1096,7 +1161,7 @@ func (s *Storage) GetSubscriptions() ([]Subscription, error) {
 // GetSubscription 获取单个订阅
 func (s *Storage) GetSubscription(id int64) (*Subscription, error) {
 	rows, err := s.db.Query(
-		`SELECT ` + subColumns + `
+		`SELECT `+subColumns+`
 		 FROM subscriptions WHERE id = ?`, id,
 	)
 	if err != nil {
@@ -1164,13 +1229,13 @@ func (s *Storage) ToggleSubscription(id int64) error {
 
 // scanSubscription 扫描订阅行数据
 // subColumns 订阅表查询列
-const subColumns = `id, name, url, file_path, format, refresh_min, last_fetch, last_success, status, proxy_count, created_at, contributed`
+const subColumns = `id, name, url, file_path, format, provider, default_protocol, refresh_min, last_fetch, last_success, status, proxy_count, created_at, contributed`
 
 func scanSubscription(rows *sql.Rows) (*Subscription, error) {
 	sub := &Subscription{}
 	var lastFetch, lastSuccess sql.NullTime
 	var contributed int
-	if err := rows.Scan(&sub.ID, &sub.Name, &sub.URL, &sub.FilePath, &sub.Format,
+	if err := rows.Scan(&sub.ID, &sub.Name, &sub.URL, &sub.FilePath, &sub.Format, &sub.Provider, &sub.DefaultProtocol,
 		&sub.RefreshMin, &lastFetch, &lastSuccess, &sub.Status, &sub.ProxyCount, &sub.CreatedAt, &contributed); err != nil {
 		return nil, err
 	}

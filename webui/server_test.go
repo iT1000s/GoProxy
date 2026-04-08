@@ -46,6 +46,15 @@ func TestHandleLoginSetsSessionCookieAttributes(t *testing.T) {
 	}
 }
 
+func TestDashboardIncludesProviderFilter(t *testing.T) {
+	if !strings.Contains(dashboardHTML, `id="provider-filter"`) {
+		t.Fatal("expected provider filter select in dashboard")
+	}
+	if !strings.Contains(dashboardHTML, `value="proxyscrape"`) {
+		t.Fatal("expected proxyscrape filter option in dashboard")
+	}
+}
+
 func TestHandleLoginSetsSecureCookieWhenForwardedHTTPS(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.WebUIPasswordHash = fmt.Sprintf("%x", sha256.Sum256([]byte("secret")))
@@ -76,7 +85,7 @@ func TestAPISubscriptionsRedactsSensitiveFields(t *testing.T) {
 	}
 	defer store.Close()
 
-	if _, err := store.AddSubscription("demo", "https://example.com/sub?token=secret", "/tmp/private.yaml", "auto", 60); err != nil {
+	if _, err := store.AddSubscription("demo", "https://example.com/sub?token=secret", "/tmp/private.yaml", "auto", "proxyscrape", "", 60); err != nil {
 		t.Fatalf("add subscription: %v", err)
 	}
 
@@ -102,6 +111,9 @@ func TestAPISubscriptionsRedactsSensitiveFields(t *testing.T) {
 	}
 	if _, ok := subs[0]["file_path"]; ok {
 		t.Fatal("expected file_path to be redacted from response")
+	}
+	if got, ok := subs[0]["provider"].(string); !ok || got != "proxyscrape" {
+		t.Fatalf("expected provider proxyscrape, got %#v", subs[0]["provider"])
 	}
 }
 
@@ -129,5 +141,48 @@ func TestAPISubscriptionAddRejectsOversizedBody(t *testing.T) {
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413, got %d", rec.Code)
+	}
+}
+
+func TestAPISubscriptionAddStoresDefaultProtocol(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := storage.New(dbPath)
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	defer store.Close()
+
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+
+	s := &Server{storage: store}
+	req := httptest.NewRequest(http.MethodPost, "/api/subscription/add", strings.NewReader(`{
+		"name":"proxyscrape",
+		"file_content":"1.1.1.1:1080\n2.2.2.2:2080\n",
+		"provider":"proxyscrape",
+		"default_protocol":"socks5",
+		"refresh_min":60
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.apiSubscriptionAdd(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	subs, err := store.GetSubscriptions()
+	if err != nil {
+		t.Fatalf("GetSubscriptions: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(subs))
+	}
+	if subs[0].DefaultProtocol != "socks5" {
+		t.Fatalf("expected default protocol socks5, got %q", subs[0].DefaultProtocol)
+	}
+	if subs[0].Provider != "proxyscrape" {
+		t.Fatalf("expected provider proxyscrape, got %q", subs[0].Provider)
 	}
 }

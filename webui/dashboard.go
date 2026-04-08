@@ -216,6 +216,12 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
               <option value="http">HTTP</option>
               <option value="socks5">SOCKS5</option>
             </select>
+            <select class="filter-select" id="provider-filter" onchange="setProviderFilter(this.value)">
+              <option value="" id="provider-filter-label">来源</option>
+              <option value="proxyscrape" data-i18n="proxy.filter_provider_proxyscrape">ProxyScrape</option>
+              <option value="manual_custom" data-i18n="proxy.filter_provider_custom">普通订阅</option>
+              <option value="free" data-i18n="proxy.filter_provider_free">免费抓取</option>
+            </select>
             <select class="filter-select" id="country-filter" onchange="setCountryFilter(this.value)">
               <option value="" id="country-filter-label">出口国家</option>
             </select>
@@ -497,6 +503,23 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
           <input type="file" id="sub-file-input" accept=".yaml,.yml,.txt,.conf,.json" style="display:none" onchange="handleFileSelect(this)">
         </div>
         <div class="form-group">
+          <label data-i18n="sub.provider">提供方</label>
+          <select id="sub-provider" class="filter-select" style="min-height:auto;padding:10px 12px;padding-right:32px">
+            <option value="" data-i18n="sub.provider_manual">普通订阅</option>
+            <option value="proxyscrape">ProxyScrape</option>
+          </select>
+          <div class="form-help" data-i18n="sub.provider_help">仅用于标签标识与管理区分，不影响你的认证配置</div>
+        </div>
+        <div class="form-group">
+          <label data-i18n="sub.default_protocol">默认协议</label>
+          <select id="sub-default-protocol" class="filter-select" style="min-height:auto;padding:10px 12px;padding-right:32px">
+            <option value="" data-i18n="sub.protocol_auto">自动识别</option>
+            <option value="http">HTTP</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+          <div class="form-help" data-i18n="sub.default_protocol_help">导入裸 IP:PORT 列表时生效；Proxyscrape 的 SOCKS5 列表建议选 SOCKS5</div>
+        </div>
+        <div class="form-group">
           <label data-i18n="sub.refresh_min">刷新间隔 (分钟)</label>
           <input type="number" id="sub-refresh" value="60" min="10" max="1440" step="10">
           <div class="form-help" data-i18n="sub.refresh_min_help">仅 URL 模式有效</div>
@@ -537,6 +560,10 @@ const i18n = {
     'proxy.title': '代理列表',
     'proxy.tab_all': '全部',
     'proxy.filter_protocol': '协议',
+    'proxy.filter_provider': '来源',
+    'proxy.filter_provider_proxyscrape': 'ProxyScrape',
+    'proxy.filter_provider_custom': '普通订阅',
+    'proxy.filter_provider_free': '免费抓取',
     'proxy.filter_country': '出口国家',
     'proxy.loading': '加载中...',
     'proxy.empty': '暂无代理',
@@ -645,6 +672,12 @@ const i18n = {
     'sub.url_help': '自动识别格式：Clash YAML / V2ray 链接 / Base64 / 纯文本',
     'sub.file_label': '配置文件',
     'sub.file_drop': '点击选择或拖拽文件到此处',
+    'sub.provider': '提供方',
+    'sub.provider_manual': '普通订阅',
+    'sub.provider_help': '仅用于标签标识与管理区分，不影响你的认证配置',
+    'sub.default_protocol': '默认协议',
+    'sub.protocol_auto': '自动识别',
+    'sub.default_protocol_help': '导入裸 IP:PORT 列表时生效；Proxyscrape 的 SOCKS5 列表建议选 SOCKS5',
     'sub.file_formats': '支持 Clash YAML / V2ray 订阅 / 纯文本',
     'sub.refresh_min': '刷新间隔 (分钟)',
     'sub.refresh_min_help': '仅 URL 模式有效，上传文件不自动刷新',
@@ -692,6 +725,10 @@ const i18n = {
     'proxy.title': 'Proxy Registry',
     'proxy.tab_all': 'All',
     'proxy.filter_protocol': 'Protocol',
+    'proxy.filter_provider': 'Provider',
+    'proxy.filter_provider_proxyscrape': 'ProxyScrape',
+    'proxy.filter_provider_custom': 'Standard Subscription',
+    'proxy.filter_provider_free': 'Free Crawled',
     'proxy.filter_country': 'Exit Country',
     'proxy.loading': 'Loading...',
     'proxy.empty': 'No proxies available',
@@ -796,6 +833,12 @@ const i18n = {
     'sub.url_help': 'Auto-detect: Clash YAML / V2ray / Base64 / Plain text',
     'sub.file_label': 'Config File',
     'sub.file_drop': 'Click or drag file here',
+    'sub.provider': 'Provider',
+    'sub.provider_manual': 'Standard',
+    'sub.provider_help': 'Used only for labeling and management; it does not change authentication behavior',
+    'sub.default_protocol': 'Default Protocol',
+    'sub.protocol_auto': 'Auto Detect',
+    'sub.default_protocol_help': 'Only used for bare IP:PORT lists; choose SOCKS5 for ProxyScrape SOCKS5 lists',
     'sub.file_formats': 'Supports Clash YAML / V2ray / Plain text',
     'sub.refresh_min': 'Refresh Interval (min)',
     'sub.refresh_min_help': 'URL mode only; file uploads do not auto-refresh',
@@ -847,6 +890,8 @@ function updateI18n() {
   // 更新筛选下拉框标签
   const protocolLabel = document.getElementById('protocol-filter-label');
   if (protocolLabel) protocolLabel.textContent = t('proxy.filter_protocol');
+  const providerLabel = document.getElementById('provider-filter-label');
+  if (providerLabel) providerLabel.textContent = t('proxy.filter_provider');
   const countryLabel = document.getElementById('country-filter-label');
   if (countryLabel) countryLabel.textContent = t('proxy.filter_country');
 }
@@ -872,6 +917,7 @@ if (savedLang) {
 }
 
 let currentProtocol = '';
+let currentProvider = '';
 let currentCountry = '';
 let allProxies = [];
 let isAdmin = false; // 是否为管理员
@@ -1042,6 +1088,15 @@ async function loadQualityDistribution() {
 }
 
 let subNameMap = {};
+let subProviderMap = {};
+
+function renderSubscriptionProviderBadge(provider) {
+  if (provider === 'proxyscrape') {
+    return '<span style="display:inline-block;background:var(--yellow);color:#000;font-size:7px;font-weight:700;padding:0 4px;margin-left:4px;vertical-align:middle;letter-spacing:0.05em">PROXYSCRAPE</span>';
+  }
+  return '';
+}
+
 async function loadProxies() {
   if (!isAdmin) {
     allProxies = [];
@@ -1052,7 +1107,11 @@ async function loadProxies() {
   const subs = await api('/api/subscriptions');
   if (subs) {
     subNameMap = {};
-    subs.forEach(s => { subNameMap[s.id] = s.name || t('sub.add_title'); });
+    subProviderMap = {};
+    subs.forEach(s => {
+      subNameMap[s.id] = s.name || t('sub.add_title');
+      subProviderMap[s.id] = s.provider || '';
+    });
   }
 
   const path = currentProtocol ? '/api/proxies?protocol=' + currentProtocol : '/api/proxies';
@@ -1087,6 +1146,9 @@ function updateCountryOptions() {
 
 function filterAndRender() {
   let filtered = allProxies;
+  if (currentProvider) {
+    filtered = filtered.filter(p => getProxyProviderValue(p) === currentProvider);
+  }
   if (currentCountry) {
     filtered = filtered.filter(p => p.exit_location && p.exit_location.startsWith(currentCountry + ' '));
   }
@@ -1098,9 +1160,25 @@ function setProtocolFilter(protocol) {
   loadProxies();
 }
 
+function setProviderFilter(provider) {
+  currentProvider = provider;
+  filterAndRender();
+}
+
 function setCountryFilter(country) {
   currentCountry = country;
   filterAndRender();
+}
+
+function getProxyProviderValue(p) {
+  if (!p || p.source !== 'custom') {
+    return 'free';
+  }
+  const provider = subProviderMap[p.subscription_id] || '';
+  if (provider === 'proxyscrape') {
+    return 'proxyscrape';
+  }
+  return 'manual_custom';
 }
 
 function renderProxies(proxies) {
@@ -1135,7 +1213,8 @@ function renderProxies(proxies) {
       html += '<td><span class="badge badge-' + escapeHtml(p.protocol) + '">' + escapeHtml((p.protocol || '').toUpperCase()) + '</span>';
       if (p.source === 'custom') {
         const subName = escapeHtml(subNameMap[p.subscription_id] || t('sub.add_title'));
-        html += ' <span style="display:inline-block;background:var(--yellow);color:#000;font-size:8px;font-weight:700;padding:1px 4px;margin-left:4px;letter-spacing:0.05em">' + subName + '</span>';
+        const subProviderBadge = renderSubscriptionProviderBadge(subProviderMap[p.subscription_id] || '');
+        html += ' <span style="display:inline-block;background:var(--yellow);color:#000;font-size:8px;font-weight:700;padding:1px 4px;margin-left:4px;letter-spacing:0.05em">' + subName + '</span>' + subProviderBadge;
       }
       html += '</td>';
       html += '<td class="cell-mono cell-clickable" onclick="copyToClipboard(\'' + addressArg + '\')" title="Copy">' + safeAddress + '</td>';
@@ -1337,11 +1416,12 @@ async function loadSubscriptions() {
     const disabled = s.disabled_count || 0;
     const total = active + disabled;
     const statsText = total + ' ' + t('sub.nodes') + ' · ' + active + ' ' + t('sub.available') + (disabled > 0 ? ' · ' + disabled + ' ' + t('sub.disabled_label') : '');
-    const badge = s.contributed ? '<span style="display:inline-block;background:var(--orange);color:#000;font-size:7px;font-weight:700;padding:0 3px;margin-left:4px;vertical-align:middle">' + t('sub.contributed') + '</span>' : '';
+    const contributedBadge = s.contributed ? '<span style="display:inline-block;background:var(--orange);color:#000;font-size:7px;font-weight:700;padding:0 3px;margin-left:4px;vertical-align:middle">' + t('sub.contributed') + '</span>' : '';
+    const providerBadge = renderSubscriptionProviderBadge(s.provider || '');
     return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">' +
       '<div style="flex:1;min-width:0">' +
         '<span style="color:' + statusColor + '">' + statusIcon + '</span> ' +
-        '<span style="font-weight:600">' + escapeHtml(s.name||t('sub.add_title')) + '</span>' + badge +
+        '<span style="font-weight:600">' + escapeHtml(s.name||t('sub.add_title')) + '</span>' + providerBadge + contributedBadge +
         '<span style="color:var(--gray-5);margin-left:8px">' + escapeHtml(statsText) + '</span>' +
       '</div>' +
       '<div style="display:flex;gap:4px;flex-shrink:0">' +
@@ -1418,6 +1498,8 @@ function openSubModal() {
   subFileContent = '';
   subTab = 'url';
   switchSubTab('url');
+  document.getElementById('sub-provider').value = '';
+  document.getElementById('sub-default-protocol').value = '';
   document.getElementById('sub-modal').style.display = 'flex';
 }
 
@@ -1428,9 +1510,11 @@ function closeSubModal() {
 async function addSubscription() {
   const name = document.getElementById('sub-name').value || t('sub.add_title');
   const url = document.getElementById('sub-url').value;
+  const provider = document.getElementById('sub-provider').value;
+  const defaultProtocol = document.getElementById('sub-default-protocol').value;
   const refreshMin = parseInt(document.getElementById('sub-refresh').value) || 60;
 
-  const data = { name, refresh_min: refreshMin };
+  const data = { name, refresh_min: refreshMin, provider, default_protocol: defaultProtocol };
 
   if (subTab === 'url') {
     if (!url) { alert(t('msg.sub_url_required')); return; }
@@ -1455,6 +1539,8 @@ async function addSubscription() {
     showToast(t('msg.sub_added'));
     document.getElementById('sub-name').value = '';
     document.getElementById('sub-url').value = '';
+    document.getElementById('sub-provider').value = '';
+    document.getElementById('sub-default-protocol').value = '';
     subFileContent = '';
     document.getElementById('sub-file-label').innerHTML = '' + t('sub.file_drop') + '';
     setTimeout(loadSubscriptions, 3000);

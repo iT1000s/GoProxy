@@ -226,7 +226,7 @@ func (m *Manager) RefreshSubscription(subID int64) error {
 	}
 
 	// 解析节点
-	nodes, err := Parse(data, sub.Format)
+	nodes, err := ParseWithOptions(data, sub.Format, ParseOptions{DefaultProtocol: sub.DefaultProtocol})
 	if err != nil {
 		return fmt.Errorf("解析订阅内容失败: %w", err)
 	}
@@ -349,7 +349,7 @@ func (m *Manager) collectAllTunnelNodes() ([]ParsedNode, error) {
 		if err != nil {
 			continue
 		}
-		nodes, err := Parse(data, sub.Format)
+		nodes, err := ParseWithOptions(data, sub.Format, ParseOptions{DefaultProtocol: sub.DefaultProtocol})
 		if err != nil {
 			continue
 		}
@@ -515,7 +515,7 @@ func (m *Manager) GetStatus() map[string]interface{} {
 }
 
 // ValidateSubscription 验证订阅能否解析出节点（不入库，仅检查）
-func (m *Manager) ValidateSubscription(url, filePath string) (int, error) {
+func (m *Manager) ValidateSubscription(url, filePath, defaultProtocol string) (int, error) {
 	var data []byte
 	var err error
 
@@ -533,7 +533,7 @@ func (m *Manager) ValidateSubscription(url, filePath string) (int, error) {
 		return 0, fmt.Errorf("未提供 URL 或文件")
 	}
 
-	nodes, err := Parse(data, "auto")
+	nodes, err := ParseWithOptions(data, "auto", ParseOptions{DefaultProtocol: defaultProtocol})
 	if err != nil {
 		return 0, err
 	}

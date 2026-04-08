@@ -22,6 +22,11 @@ type ParsedNode struct {
 	Raw    map[string]interface{} // 原始配置字段（用于生成 sing-box 配置）
 }
 
+// ParseOptions 解析选项
+type ParseOptions struct {
+	DefaultProtocol string // 纯文本 IP:PORT 的默认协议：""/http/socks5
+}
+
 // NodeKey 节点去重 key
 func (n *ParsedNode) NodeKey() string {
 	return fmt.Sprintf("%s:%s:%d", n.Type, n.Server, n.Port)
@@ -47,12 +52,17 @@ func (n *ParsedNode) DirectProtocol() string {
 
 // Parse 解析订阅内容（全自动检测格式）
 func Parse(data []byte, format string) ([]ParsedNode, error) {
+	return ParseWithOptions(data, format, ParseOptions{})
+}
+
+// ParseWithOptions 解析订阅内容（支持默认协议等选项）
+func ParseWithOptions(data []byte, format string, opts ParseOptions) ([]ParsedNode, error) {
 	// 无论用户选择什么格式，都走自动检测
-	return parseAutoDetect(data)
+	return parseAutoDetect(data, opts)
 }
 
 // parseAutoDetect 自动检测订阅格式并解析
-func parseAutoDetect(data []byte) ([]ParsedNode, error) {
+func parseAutoDetect(data []byte, opts ParseOptions) ([]ParsedNode, error) {
 	content := strings.TrimSpace(string(data))
 	log.Printf("[custom] 自动检测格式: 内容长度=%d", len(content))
 
@@ -72,10 +82,17 @@ func parseAutoDetect(data []byte) ([]ParsedNode, error) {
 		return parseProxyLinks(content)
 	}
 
-	// 3. 尝试 Base64 解码
+	// 3. 尝试原始纯文本代理列表（如 Proxyscrape 导出）
+	nodes, err := parsePlainWithDefaultProtocol(data, opts.DefaultProtocol)
+	if err == nil && len(nodes) > 0 {
+		log.Println("[custom] 检测到纯文本代理列表格式")
+		return nodes, nil
+	}
+
+	// 4. 尝试 Base64 解码
 	decoded, err := tryBase64Decode(content)
 	if err != nil {
-		return nil, fmt.Errorf("无法识别订阅内容格式（非 YAML / 非协议链接 / 非 Base64）")
+		return nil, fmt.Errorf("无法识别订阅内容格式（非 YAML / 非协议链接 / 非纯文本代理列表 / 非 Base64）")
 	}
 
 	decodedStr := strings.TrimSpace(string(decoded))
@@ -97,8 +114,9 @@ func parseAutoDetect(data []byte) ([]ParsedNode, error) {
 	}
 
 	// 解码后尝试纯文本
-	nodes, err := parsePlain(decoded)
+	nodes, err = parsePlainWithDefaultProtocol(decoded, opts.DefaultProtocol)
 	if err == nil && len(nodes) > 0 {
+		log.Println("[custom] Base64 解码后为纯文本代理列表")
 		return nodes, nil
 	}
 
@@ -350,8 +368,16 @@ func parseBase64(data []byte) ([]ParsedNode, error) {
 
 // parsePlain 解析纯文本格式（每行一个 IP:PORT）
 func parsePlain(data []byte) ([]ParsedNode, error) {
+	return parsePlainWithDefaultProtocol(data, "")
+}
+
+func parsePlainWithDefaultProtocol(data []byte, defaultProtocol string) ([]ParsedNode, error) {
 	lines := strings.Split(string(data), "\n")
 	var nodes []ParsedNode
+	fallbackProtocol := normalizeDirectProtocol(defaultProtocol)
+	if fallbackProtocol == "" {
+		fallbackProtocol = "http"
+	}
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -359,7 +385,7 @@ func parsePlain(data []byte) ([]ParsedNode, error) {
 			continue
 		}
 
-		protocol := "http"
+		protocol := fallbackProtocol
 		addr := line
 
 		// 解析协议前缀
@@ -397,6 +423,19 @@ func parsePlain(data []byte) ([]ParsedNode, error) {
 
 	log.Printf("[custom] 纯文本解析完成，共 %d 个节点", len(nodes))
 	return nodes, nil
+}
+
+func normalizeDirectProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "", "auto":
+		return ""
+	case "http", "https":
+		return "http"
+	case "socks5", "socks4":
+		return "socks5"
+	default:
+		return ""
+	}
 }
 
 // parseProxyLinks 解析协议链接格式（vmess://, trojan://, ss://, vless:// 等）

@@ -574,16 +574,18 @@ func (s *Server) apiSubscriptions(w http.ResponseWriter, r *http.Request) {
 
 	// 附加每个订阅的代理统计
 	type subscriptionView struct {
-		ID          int64     `json:"id"`
-		Name        string    `json:"name"`
-		Format      string    `json:"format"`
-		RefreshMin  int       `json:"refresh_min"`
-		LastFetch   time.Time `json:"last_fetch"`
-		LastSuccess time.Time `json:"last_success"`
-		Status      string    `json:"status"`
-		ProxyCount  int       `json:"proxy_count"`
-		CreatedAt   time.Time `json:"created_at"`
-		Contributed bool      `json:"contributed"`
+		ID              int64     `json:"id"`
+		Name            string    `json:"name"`
+		Format          string    `json:"format"`
+		Provider        string    `json:"provider"`
+		DefaultProtocol string    `json:"default_protocol"`
+		RefreshMin      int       `json:"refresh_min"`
+		LastFetch       time.Time `json:"last_fetch"`
+		LastSuccess     time.Time `json:"last_success"`
+		Status          string    `json:"status"`
+		ProxyCount      int       `json:"proxy_count"`
+		CreatedAt       time.Time `json:"created_at"`
+		Contributed     bool      `json:"contributed"`
 	}
 	type subWithStats struct {
 		subscriptionView
@@ -595,16 +597,18 @@ func (s *Server) apiSubscriptions(w http.ResponseWriter, r *http.Request) {
 		active, disabled := s.storage.CountBySubscriptionID(sub.ID)
 		result = append(result, subWithStats{
 			subscriptionView: subscriptionView{
-				ID:          sub.ID,
-				Name:        sub.Name,
-				Format:      sub.Format,
-				RefreshMin:  sub.RefreshMin,
-				LastFetch:   sub.LastFetch,
-				LastSuccess: sub.LastSuccess,
-				Status:      sub.Status,
-				ProxyCount:  sub.ProxyCount,
-				CreatedAt:   sub.CreatedAt,
-				Contributed: sub.Contributed,
+				ID:              sub.ID,
+				Name:            sub.Name,
+				Format:          sub.Format,
+				Provider:        sub.Provider,
+				DefaultProtocol: sub.DefaultProtocol,
+				RefreshMin:      sub.RefreshMin,
+				LastFetch:       sub.LastFetch,
+				LastSuccess:     sub.LastSuccess,
+				Status:          sub.Status,
+				ProxyCount:      sub.ProxyCount,
+				CreatedAt:       sub.CreatedAt,
+				Contributed:     sub.Contributed,
 			},
 			ActiveCount:   active,
 			DisabledCount: disabled,
@@ -640,12 +644,20 @@ func (s *Server) apiSubscriptionAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name        string `json:"name"`
-		URL         string `json:"url"`
-		FileContent string `json:"file_content"` // 上传的文件内容（Base64 编码）
-		RefreshMin  int    `json:"refresh_min"`
+		Name            string `json:"name"`
+		URL             string `json:"url"`
+		FileContent     string `json:"file_content"` // 上传的文件内容（Base64 编码）
+		Provider        string `json:"provider"`
+		DefaultProtocol string `json:"default_protocol"`
+		RefreshMin      int    `json:"refresh_min"`
 	}
 	if err := decodeJSONBody(w, r, &req, subscriptionJSONBodyMaxBytes); err != nil {
+		return
+	}
+	req.Provider = normalizeSubscriptionProvider(req.Provider)
+	req.DefaultProtocol = normalizeSubscriptionDefaultProtocol(req.DefaultProtocol)
+	if req.DefaultProtocol == "__invalid__" {
+		jsonError(w, "默认协议仅支持 auto/http/socks5", http.StatusBadRequest)
 		return
 	}
 	if req.URL == "" && req.FileContent == "" {
@@ -678,7 +690,7 @@ func (s *Server) apiSubscriptionAdd(w http.ResponseWriter, r *http.Request) {
 
 	// 先验证：拉取并解析，确认能解析出节点后再入库
 	if s.customMgr != nil {
-		nodeCount, err := s.customMgr.ValidateSubscription(req.URL, filePath)
+		nodeCount, err := s.customMgr.ValidateSubscription(req.URL, filePath, req.DefaultProtocol)
 		if err != nil {
 			// 清理已保存的文件
 			if filePath != "" {
@@ -690,7 +702,7 @@ func (s *Server) apiSubscriptionAdd(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[webui] 订阅验证通过: %s (%d 个节点)", req.Name, nodeCount)
 	}
 
-	id, err := s.storage.AddSubscription(req.Name, req.URL, filePath, "auto", req.RefreshMin)
+	id, err := s.storage.AddSubscription(req.Name, req.URL, filePath, "auto", req.Provider, req.DefaultProtocol, req.RefreshMin)
 	if err != nil {
 		jsonError(w, "add subscription error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -707,6 +719,30 @@ func (s *Server) apiSubscriptionAdd(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[webui] 添加订阅: %s (url=%v file=%v)", req.Name, req.URL != "", filePath != "")
 	jsonOK(w, map[string]interface{}{"status": "added", "id": id})
+}
+
+func normalizeSubscriptionDefaultProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "", "auto":
+		return ""
+	case "http", "https":
+		return "http"
+	case "socks5", "socks4":
+		return "socks5"
+	default:
+		return "__invalid__"
+	}
+}
+
+func normalizeSubscriptionProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "manual", "default":
+		return ""
+	case "proxyscrape":
+		return "proxyscrape"
+	default:
+		return ""
+	}
 }
 
 // apiSubscriptionDelete 删除订阅
